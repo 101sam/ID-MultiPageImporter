@@ -1,4 +1,4 @@
-// MultiPageImporter2.7.0 jsx
+// MultiPageImporter2.7.1 jsx
 // An InDesign CS4+ JavaScript
 // Updated for InDesign 2024-2026+ compatibility
 // Original Copyright (C) 2008-2009 Scott Zanelli. lonelytreesw@gmail.com
@@ -37,24 +37,32 @@
 //   - Improved: Better error messages with actionable solutions
 //   - Improved: Variable scoping fixes throughout
 //   - Maintains full backward compatibility with CS3/CS4/CS5+
+// Version 2.7.1: Fixed "Illegal return outside of function body" error (Feb 2026)
+//   - Wrapped main execution in function to allow proper early returns
+//   - Removed all exit() calls which cause engine deletion errors in InDesign 2024+
+
+//#target indesign;
+
+// Wrap entire script in a self-executing function to allow return statements
+(function() {
 
 // Get app version and save old interation setting.
 // Some installs have the interaction level set to not show any dialogs.
 // This is used to insure that the dialog is shown.
 
-//#target indesign;
-
 var appVersion = parseInt(app.version);
+var oldInteractionPref;
+
 // Only works in CS3+
 if(appVersion >= 5)
 {
-	var oldInteractionPref = app.scriptPreferences.userInteractionLevel;
+	oldInteractionPref = app.scriptPreferences.userInteractionLevel;
 	app.scriptPreferences.userInteractionLevel = UserInteractionLevels.interactWithAll;
 }
 else
 {
 	alert("Features used in this script will only work in InDesign CS3 or later.");
-	exit(-1);
+	return; // Safe to use return inside function
 }
 
 // Set the next line to false to not use prefs
@@ -94,6 +102,18 @@ var rotateValues = [0,90,180,270];
 var positionValuesAll = ["Top left", "Top center", "Top right", "Center left",  "Center", "Center right", "Bottom left",  "Bottom center",  "Bottom right"];
 var noPDFError = true;
 var prefsFile;
+var theDoc;
+var theDocIsMine = false;
+var placementINFO;
+var cropTypes;
+var cropStrings;
+var currentLayer;
+var docPgCount;
+var oldZero;
+var oldRulerOrigin;
+var fileName;
+var theFile;
+var startPG, endPG;
 
 // Look for and read prefs file
 try {
@@ -116,34 +136,33 @@ else
 var askIt = "Select a PDF, PDF compatible AI or InDesign file to place:";
 if (File.fs =="Windows")
 {
-	var theFile = File.openDialog(askIt, "Placeable: *.indd;*.indt;*.idml;*.pdf;*.ai");
+	theFile = File.openDialog(askIt, "Placeable: *.indd;*.indt;*.idml;*.pdf;*.ai");
 }
 else if (File.fs == "Macintosh")
 {
-	var theFile = File.openDialog(askIt, macFileFilter);
+	theFile = File.openDialog(askIt, macFileFilter);
 }
 else
 {
-	var theFile = File.openDialog(askIt);
+	theFile = File.openDialog(askIt);
 }
 
 // Check if cancel was clicked or invalid file selected
-var scriptShouldRun = true;
 if (theFile == null)
 {
 	// user clicked cancel, just leave
-	scriptShouldRun = false;
+	restoreInteraction();
+	return;
 }
-else if((theFile.name.toLowerCase().indexOf(".pdf") == -1 && theFile.name.toLowerCase().indexOf(".ind") == -1 && theFile.name.toLowerCase().indexOf(".ai") == -1 ))
+
+if((theFile.name.toLowerCase().indexOf(".pdf") == -1 && theFile.name.toLowerCase().indexOf(".ind") == -1 && theFile.name.toLowerCase().indexOf(".ai") == -1 ))
 {
 	alert("A PDF, PDF compatible AI or InDesign file must be chosen.", "File Type Error");
-	scriptShouldRun = false;
+	restoreInteraction();
+	return;
 }
 
-// Only continue if a valid file was selected
-if (scriptShouldRun) {
-
-var fileName = File.decode(theFile.name);
+fileName = File.decode(theFile.name);
 
 // removed 6/25/08: var indUpdateStrings = ["Use Doc's Layer Visibility","Keep Layer Visibility Overrides"];
 
@@ -153,21 +172,21 @@ if((theFile.name.toLowerCase().indexOf(".pdf") != -1) || (theFile.name.toLowerCa
 	if (appVersion > 6)
 	{
 		// CS5 or newer (includes CC, CC 2014-2024, 2025, 2026+)
-		var cropTypes = [PDFCrop.cropPDF, PDFCrop.cropArt, PDFCrop.cropTrim, PDFCrop.cropBleed, PDFCrop.cropMedia, PDFCrop.cropContentAllLayers, PDFCrop.cropContentVisibleLayers];
-		var cropStrings = ["Crop","Art","Trim","Bleed", "Media","All Layers Bounding Box","Visible Layers Bounding Box"];
+		cropTypes = [PDFCrop.cropPDF, PDFCrop.cropArt, PDFCrop.cropTrim, PDFCrop.cropBleed, PDFCrop.cropMedia, PDFCrop.cropContentAllLayers, PDFCrop.cropContentVisibleLayers];
+		cropStrings = ["Crop","Art","Trim","Bleed", "Media","All Layers Bounding Box","Visible Layers Bounding Box"];
 	}
 	else
 	{
 		// CS3 or CS4
-		var cropTypes = [PDFCrop.cropContent, PDFCrop.cropArt, PDFCrop.cropPDF, PDFCrop.cropTrim, PDFCrop.cropBleed, PDFCrop.cropMedia];
-		var cropStrings = ["Bounding Box","Art","Crop","Trim","Bleed", "Media"];
+		cropTypes = [PDFCrop.cropContent, PDFCrop.cropArt, PDFCrop.cropPDF, PDFCrop.cropTrim, PDFCrop.cropBleed, PDFCrop.cropMedia];
+		cropStrings = ["Bounding Box","Art","Crop","Trim","Bleed", "Media"];
 	}
 	// Premedia Systems/JJB Edit End
 
 	// Parse the PDF file and extract needed info
 	try
 	{
-		var placementINFO = getPDFInfo(theFile, (app.documents.length == 0));
+		placementINFO = getPDFInfo(theFile, (app.documents.length == 0));
 	}
 	catch(e)
 	{
@@ -188,16 +207,16 @@ if((theFile.name.toLowerCase().indexOf(".pdf") != -1) || (theFile.name.toLowerCa
 }
 else
 {
-	var cropTypes = [ImportedPageCropOptions.CROP_CONTENT, ImportedPageCropOptions.CROP_BLEED, ImportedPageCropOptions.CROP_SLUG];
-	var cropStrings = ["Page bounding box","Bleed bounding box","Slug bounding box"];
+	cropTypes = [ImportedPageCropOptions.CROP_CONTENT, ImportedPageCropOptions.CROP_BLEED, ImportedPageCropOptions.CROP_SLUG];
+	cropStrings = ["Page bounding box","Bleed bounding box","Slug bounding box"];
 	// Get the InDesign doc's info
-	var placementINFO = getINDinfo(theFile);
+	placementINFO = getINDinfo(theFile);
 	placementINFO["kind"] = IND_DOC;
 }
 
 // If there is no document open, create a new one using the size of the
 // first encountered page
-var theDocIsMine = false; // Is the doc created by this script boolean
+theDocIsMine = false; // Is the doc created by this script boolean
 if(app.documents.length == 0)
 {
 	// Save the app measurement units to restore after doc is created
@@ -224,7 +243,7 @@ if(app.documents.length == 0)
 	}
 
 	// Make the new doc:
-	var theDoc = app.documents.add();
+	theDoc = app.documents.add();
     theDocIsMine = true;
 	theDoc.documentPreferences.facingPages = false;
 	theDoc.marginPreferences.columnCount = 1;
@@ -243,11 +262,11 @@ if(app.documents.length == 0)
 }
 else
 {
-	var theDoc = app.activeDocument;
+	theDoc = app.activeDocument;
 }
 
-var currentLayer = theDoc.activeLayer;
-var docPgCount = theDoc.pages.length;
+currentLayer = theDoc.activeLayer;
+docPgCount = theDoc.pages.length;
 
 // Get and display the dialog
 dLog = makeDialog();
@@ -258,15 +277,15 @@ if(dLog.show() == 1)
 	// Extract info from dialog info
 	if(noPDFError)
 	{
-		var startPG = Number(dLog.startPG.text);
-		var endPG = Number(dLog.endPG.text);
+		startPG = Number(dLog.startPG.text);
+		endPG = Number(dLog.endPG.text);
 		mapPages = Number(dLog.mapPages.value);
 		reverseOrder = Number(dLog.reverseOrder.value);
 	}
 	else
 	{
-		var startPG = 1;
-		var endPG = 99999;
+		startPG = 1;
+		endPG = 99999;
 	}
 
 	var docStartPG = Number(dLog.docStartPG.text);
@@ -291,7 +310,7 @@ if(dLog.show() == 1)
 else
 {
 	restoreDefaults(false);
-	exit();
+	return; // Safe inside function
 }
 
 // Check whether to do page mapping
@@ -316,7 +335,7 @@ if(mapPages && noPDFError)
 	{
 		// Cancel clicked
 		restoreDefaults(false);
-		exit(0);
+		return; // Safe inside function
 	}
 }
 
@@ -343,12 +362,12 @@ if(placeOnLayer)
 }
 
 // Save zero point for later restoration
-var oldZero = theDoc.zeroPoint;
+oldZero = theDoc.zeroPoint;
 // set the zero point to the origin
 theDoc.zeroPoint = [0,0];
 
 // Save ruler origin for later restoration
-var oldRulerOrigin = theDoc.viewPreferences.rulerOrigin;
+oldRulerOrigin = theDoc.viewPreferences.rulerOrigin;
 // set the ruler origin to page or all PDFs will be placed on first page of spreads
 theDoc.viewPreferences.rulerOrigin = RulerOrigin.pageOrigin;
 
@@ -382,7 +401,7 @@ if(ignoreErrors)
 }
 
 // Create the Object Style to be applied to the placed pages.
-var tempObjStyle = theDoc.objectStyles.add();
+tempObjStyle = theDoc.objectStyles.add();
 tempObjStyle.name = "MultiPageImporter_Styler_" + Math.round(Math.random() * 9999);
 tempObjStyle.strokeWeight = 0; // Make sure there's no stroke
 tempObjStyle.fillColor = "None"; // Make sure fill is none
@@ -516,14 +535,12 @@ tempObjStyle.remove();
 savePrefs(false);
 restoreDefaults(true);
 
-} // End of if(scriptShouldRun)
-
-// Restore interaction preference even if script didn't run
-if (typeof oldInteractionPref !== 'undefined') {
-	app.scriptPreferences.userInteractionLevel = oldInteractionPref;
+// Helper function to restore interaction preference only
+function restoreInteraction() {
+	if (typeof oldInteractionPref !== 'undefined') {
+		app.scriptPreferences.userInteractionLevel = oldInteractionPref;
+	}
 }
-
-// THE END OF MAIN EXECUTION
 
 // Place the requested pages in the document
 function addPages(docStartPG, startPG, endPG)
@@ -619,7 +636,7 @@ function addPages(docStartPG, startPG, endPG)
 			restoreDefaults(true);
 			// Kill the Object style
 			try { tempObjStyle.remove(); } catch(styleErr) {}
-			return; // Return instead of exit to avoid engine deletion error
+			return; // Safe inside function
 		}
 
 		// Apply any rotation
@@ -1691,7 +1708,10 @@ function getINDinfo(theDoc)
 // File filter for the mac to only show indy and pdf files
 function macFileFilter(fileToTest)
 {
-	if(fileToTest.name.indexOf(".pdf") > -1 || fileToTest.name.indexOf(".ai") > -1 || fileToTest.name.indexOf(".ind") > -1 || fileToTest.name.indexOf(".idml") > -1)
+	var name = fileToTest.name.toLowerCase();
+	if((name.indexOf(".pdf") != -1 || name.indexOf(".indd") != -1 || name.indexOf(".indt") != -1 ||
+	    name.indexOf(".idml") != -1 || name.indexOf(".ai") != -1 ||
+	    fileToTest.constructor.name == "Folder" || fileToTest.name == "") && name.indexOf(".app") == -1)
 		return true;
 	else
 		return false;
@@ -1826,19 +1846,6 @@ function ondLogClosed()
 			  "Invalid Page Number Error");
 		return false;
 	}
-}
-
-// File filter for the mac to only show indy, pdf, and template files
-// The test for the constructor name came from Dave Suanders: http://jsid.blogspot.com/2006_03_01_archive.html
-function macFileFilter(fileToTest)
-{
-	var name = fileToTest.name.toLowerCase();
-	if((name.indexOf(".pdf") != -1 || name.indexOf(".indd") != -1 || name.indexOf(".indt") != -1 ||
-	    name.indexOf(".idml") != -1 || name.indexOf(".ai") != -1 ||
-	    fileToTest.constructor.name == "Folder" || fileToTest.name == "") && name.indexOf(".app") == -1)
-		return true;
-	else
-		return false;
 }
 
 // When reverseOrder checkbox is clicked, enable/disable the mapping checkbox
@@ -1987,3 +1994,5 @@ function mapPGValidator()
 		dLog.reverseOrder.enabled = true;
 	}
 }
+
+})(); // End of self-executing function wrapper

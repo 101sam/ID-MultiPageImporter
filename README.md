@@ -43,6 +43,13 @@ Script for automating the placing (import) of multi-page PDF, AI, and InDesign f
 
 ## Changelog
 
+### Version 2.7.1 (February 2026)
+
+**Bug Fixes:**
+- Fixed "Illegal 'return' outside of a function body" error that occurred in InDesign 2024+
+- Wrapped entire script in self-executing function to allow proper early returns
+- Removed all `exit()` calls which cause engine deletion errors
+
 ### Version 2.7.0 (February 2026)
 
 **Bug Fixes:**
