@@ -2,7 +2,7 @@
 
 Script for automating the placing (import) of multi-page PDF, AI, and InDesign files inside Adobe InDesign.
 
-> **Actively Maintained Fork**: This is the actively maintained version of MultiPageImporter with fixes for InDesign 2024-2026+. The [original repository](https://github.com/mike-edel/ID-MultiPageImporter) has not been updated since 2021.
+> **Actively Maintained Fork**: This is the actively maintained version of MultiPageImporter with fixes for InDesign 2024-2026+. The [original repository](https://github.com/mike-edel/ID-MultiPageImporter) has not been updated since October 2023.
 >
 > **Please submit all issues and pull requests here**, not to the original repo.
 
