@@ -98,6 +98,51 @@ The following enhancement requests from the original repo are not yet implemente
 - [#17](https://github.com/mike-edel/ID-MultiPageImporter/issues/17) - Apply object style option
 - [#19](https://github.com/mike-edel/ID-MultiPageImporter/issues/19) - Right binding support
 
+## Reporting Issues
+
+### Bug Reports
+
+If the script is not working:
+
+1. Go to [Issues](https://github.com/101sam/ID-MultiPageImporter/issues)
+2. Click **New Issue**
+3. Select **Bug Report**
+4. Provide:
+   - InDesign version (e.g., 2026)
+   - Operating system
+   - File type being imported
+   - Full error message
+   - Steps to reproduce
+
+### Feature Requests
+
+1. Go to [Issues](https://github.com/101sam/ID-MultiPageImporter/issues)
+2. Click **New Issue**
+3. Select **Feature Request**
+4. Describe the feature and use case
+
+### Before Opening an Issue
+
+- Check [existing issues](https://github.com/101sam/ID-MultiPageImporter/issues) for duplicates
+- Check the Known Issues section above
+
+## Contributing
+
+We welcome contributions. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Quick Start
+
+1. Fork the repository
+2. Create a branch (`git checkout -b fix/your-fix`)
+3. Make changes and test in InDesign
+4. Submit a Pull Request
+
+### Important
+
+- Do NOT use `exit()` in code - use `return` instead
+- Test on InDesign 2024+ before submitting
+- Update version number and changelog
+
 ## Original Author
 
 Scott Zanelli (lonelytreesw@gmail.com)
