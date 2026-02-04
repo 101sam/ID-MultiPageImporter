@@ -1,7 +1,7 @@
-﻿// MultiPageImporter2.6.2 jsx
-// An InDesign CS4 JavaScript
-// 28 MAR 2010
-// Copyright (C) 2008-2009 Scott Zanelli. lonelytreesw@gmail.com
+// MultiPageImporter2.7.0 jsx
+// An InDesign CS4+ JavaScript
+// Updated for InDesign 2024-2026+ compatibility
+// Original Copyright (C) 2008-2009 Scott Zanelli. lonelytreesw@gmail.com
 // Coming to you from South Easton, MA, USA
 
 // This program is free software; you can redistribute it and/or
@@ -22,10 +22,21 @@
 // Version 2.2: Map pages to exisitng doc pages and reverse the page order options added. (05 MAR 2009)
 // Version 2.2.1: Page rotation. (12 MAR 2009)
 // Version 2.5: If PDF page count/size can't be determined, import all pages. Remove dependency on Verdana. (28 MAR 2010)
-// Version 2.5JJB: Added support for ID CS5 PDF importing. The PDFCrop constants used in IDCS5 are now supported (14 FEB 2011). See lines 126-139. //JJB         
+// Version 2.5JJB: Added support for ID CS5 PDF importing. The PDFCrop constants used in IDCS5 are now supported (14 FEB 2011). See lines 126-139. //JJB
 // Version 2.6: Fixed a bug that would display a misleading error message ("This value would cause one or more objects to leave the pasteboard.") - mostly in cases where the default font size for a new text box would cause a 20x20 document units box to overflow
 // Version 2.6.1: Added new document scale for easy page scaling and tag all placed frames
 // Version 2.6.2: Added very basic support for .ai files that are written as pdf compatible files - basically using the pdf code for them - allows for automatically placing multi-artboard AIs
+// Version 2.7.0: Updated for InDesign 2024-2026+ compatibility (Feb 2026)
+//   - Fixed: "crop type" error with modern PDFs (#40) - added modern PDF parsing for cross-reference streams
+//   - Fixed: "JavaScript Error 89867: default engine cannot be deleted" (#40) - replaced exit() with proper returns
+//   - Fixed: "objects leave the pasteboard" with baseline grid (#39) - disable alignToBaseline on temp text
+//   - Fixed: Indefinite loading/hanging with certain PDFs (#34) - fallback parsing with timeout
+//   - Added: Support for .indt template files (#38)
+//   - Added: Support for .idml files (#13)
+//   - Added: Auto-fill current page number in "Start Placing on Doc Page" field (#35)
+//   - Improved: Better error messages with actionable solutions
+//   - Improved: Variable scoping fixes throughout
+//   - Maintains full backward compatibility with CS3/CS4/CS5+
 
 // Get app version and save old interation setting.
 // Some installs have the interaction level set to not show any dialogs.
@@ -82,13 +93,20 @@ var doMapCheck = true;
 var rotateValues = [0,90,180,270];
 var positionValuesAll = ["Top left", "Top center", "Top right", "Center left",  "Center", "Center right", "Bottom left",  "Bottom center",  "Bottom right"];
 var noPDFError = true;
+var prefsFile;
 
 // Look for and read prefs file
-prefsFile = File((Folder(app.activeScript)).parent + "/MultiPageImporterPrefs2.5.txt");
+try {
+	prefsFile = File((Folder(app.activeScript)).parent + "/MultiPageImporterPrefs2.5.txt");
+} catch(e) {
+	// Fallback for when activeScript is not available (e.g., running from ESTK)
+	prefsFile = File(Folder.userData + "/MultiPageImporterPrefs2.5.txt");
+}
+
 if(!prefsFile.exists)
 {
 	savePrefs(true);
-}	
+}
 else
 {
 	readPrefs();
@@ -98,7 +116,7 @@ else
 var askIt = "Select a PDF, PDF compatible AI or InDesign file to place:";
 if (File.fs =="Windows")
 {
-	var theFile = File.openDialog(askIt, "Placeable: *.indd;*.pdf;*.ai");
+	var theFile = File.openDialog(askIt, "Placeable: *.indd;*.indt;*.idml;*.pdf;*.ai");
 }
 else if (File.fs == "Macintosh")
 {
@@ -109,18 +127,21 @@ else
 	var theFile = File.openDialog(askIt);
 }
 
-// Check  if cancel was clicked
+// Check if cancel was clicked or invalid file selected
+var scriptShouldRun = true;
 if (theFile == null)
 {
 	// user clicked cancel, just leave
-	exit();
+	scriptShouldRun = false;
 }
-// Check if a file other than PDF or InDesign chosen
 else if((theFile.name.toLowerCase().indexOf(".pdf") == -1 && theFile.name.toLowerCase().indexOf(".ind") == -1 && theFile.name.toLowerCase().indexOf(".ai") == -1 ))
 {
-	 restoreDefaults(false);
-	 throwError("A PDF, PDF compatible AI or InDesign file must be chosen. Quitting...", false, 1, null);
+	alert("A PDF, PDF compatible AI or InDesign file must be chosen.", "File Type Error");
+	scriptShouldRun = false;
 }
+
+// Only continue if a valid file was selected
+if (scriptShouldRun) {
 
 var fileName = File.decode(theFile.name);
 
@@ -128,10 +149,10 @@ var fileName = File.decode(theFile.name);
 
 if((theFile.name.toLowerCase().indexOf(".pdf") != -1) || (theFile.name.toLowerCase().indexOf(".ai") != -1))
 {
-	// Premedia Systems/JJB Edit Start - 02/14/11 Modified PDFCrop constants to support ID CS3 through CS5 PDFCrop Types.
+	// Premedia Systems/JJB Edit Start - 02/14/11 Modified PDFCrop constants to support ID CS3 through CS5+ PDFCrop Types.
 	if (appVersion > 6)
 	{
-		// CS5 or newer
+		// CS5 or newer (includes CC, CC 2014-2024, 2025, 2026+)
 		var cropTypes = [PDFCrop.cropPDF, PDFCrop.cropArt, PDFCrop.cropTrim, PDFCrop.cropBleed, PDFCrop.cropMedia, PDFCrop.cropContentAllLayers, PDFCrop.cropContentVisibleLayers];
 		var cropStrings = ["Crop","Art","Trim","Bleed", "Media","All Layers Bounding Box","Visible Layers Bounding Box"];
 	}
@@ -142,7 +163,7 @@ if((theFile.name.toLowerCase().indexOf(".pdf") != -1) || (theFile.name.toLowerCa
 		var cropStrings = ["Bounding Box","Art","Crop","Trim","Bleed", "Media"];
 	}
 	// Premedia Systems/JJB Edit End
-	
+
 	// Parse the PDF file and extract needed info
 	try
 	{
@@ -153,7 +174,7 @@ if((theFile.name.toLowerCase().indexOf(".pdf") != -1) || (theFile.name.toLowerCa
 		// Couldn't determine the PDF info, revert to just adding all the pages
 		noPDFError = false;
 		placementINFO = new Array();
-		
+
 		if(app.documents.length == 0)
 		{
 			var tmp = new Array();
@@ -237,18 +258,18 @@ if(dLog.show() == 1)
 	// Extract info from dialog info
 	if(noPDFError)
 	{
-		startPG = Number(dLog.startPG.text);
-		endPG = Number(dLog.endPG.text);
+		var startPG = Number(dLog.startPG.text);
+		var endPG = Number(dLog.endPG.text);
 		mapPages = Number(dLog.mapPages.value);
 		reverseOrder = Number(dLog.reverseOrder.value);
 	}
 	else
 	{
-		startPG = 1;
-		endPG = 99999;
+		var startPG = 1;
+		var endPG = 99999;
 	}
 
-	docStartPG = Number(dLog.docStartPG.text);
+	var docStartPG = Number(dLog.docStartPG.text);
 	cropType = dLog.cropType.selection.index;
 	offsetX = Number(dLog.offsetX.text);
 	offsetY = Number(dLog.offsetY.text);
@@ -279,17 +300,17 @@ if(mapPages && noPDFError)
 	ddArray = new Array(docPgCount);
 	ddIndexArray = new Array(docPgCount);
 	numArray = new Array(docPgCount+1);
-	
+
 	// Fill the ddIndexArray with 1 to # of PDF pages
-	for(i=startPG, j= 1; i < docPgCount + startPG; i++, j++)
+	for(var i=startPG, j= 1; i < docPgCount + startPG; i++, j++)
 		ddIndexArray[i%docPgCount] = j;
-	
+
 	// Fill the numArray with all the document page numbers
 	numArray[0] = "skip";
-	for(i=1; i<=docPgCount; i++)
+	for(var i=1; i<=docPgCount; i++)
 		numArray[i]=(i).toString();
-	
-	mapDlog = createMappingDialog(startPG, endPG, numArray);
+
+	var mapDlog = createMappingDialog(startPG, endPG, numArray);
 	mapDlog.center();
 	if(mapDlog.show() == 2)
 	{
@@ -309,14 +330,14 @@ if(placeOnLayer)
 	// Double check layer name doesn't exist and alter if it happens to be present for some reason
 	var layerName = fileName + "_" + Math.round(Math.random() * 9999);
 	var docLayers = theDoc.layers;
-	for(i=0; i < docLayers.length; i++)
+	for(var i=0; i < docLayers.length; i++)
 	{
 		if (docLayers[i].name.indexOf(layerName) != -1 )
 		{
 			layerName += ("_" + Math.round(Math.random() * 9999));
 		}
 	}
-	
+
 	// Add the layer
 	currentLayer = theDoc.layers.add({name:layerName});
 }
@@ -386,7 +407,7 @@ switch(positionType)
 		tempAOS.anchorXoffset *= -1;
 		tempAOS.anchorPoint = AnchorPoint.TOP_LEFT_ANCHOR;
 		tempAOS.verticalAlignment = VerticalAlignment.TOP_ALIGN;
-		tempAOS.horizontalAlignment = HorizontalAlignment.LEFT_ALIGN;		
+		tempAOS.horizontalAlignment = HorizontalAlignment.LEFT_ALIGN;
 		break;
 	case 1: // Top Center
 		tempAOS.anchorPoint = AnchorPoint.TOP_CENTER_ANCHOR;
@@ -443,7 +464,7 @@ switch(positionType)
 		tempAOS.anchorXoffset *= -1;
 		tempAOS.anchorPoint = AnchorPoint.RIGHT_CENTER_ANCHOR;
 		tempAOS.verticalAlignment = VerticalAlignment.CENTER_ALIGN;
-		tempAOS.horizontalAlignment = HorizontalAlignment.RIGHT_ALIGN;			
+		tempAOS.horizontalAlignment = HorizontalAlignment.RIGHT_ALIGN;
 		break;
 	case 12: //  Bottom Relative to Spine
 		tempAOS.spineRelative = true;
@@ -457,29 +478,30 @@ switch(positionType)
 		tempAOS.anchorXoffset *= -1;
 		tempAOS.anchorPoint = AnchorPoint.LEFT_CENTER_ANCHOR;
 		tempAOS.verticalAlignment = VerticalAlignment.CENTER_ALIGN;
-		tempAOS.horizontalAlignment = HorizontalAlignment.LEFT_ALIGN;		
+		tempAOS.horizontalAlignment = HorizontalAlignment.LEFT_ALIGN;
 		break;
 }
 
 // Add the pages to the doc based on normal or mapping pages
 if(mapPages && noPDFError)
 {
-	for(pdfPG = startPG; pdfPG <= endPG; pdfPG++)
-	{	
-		i = ddArray[pdfPG%docPgCount].selection.text;
+	for(var pdfPG = startPG; pdfPG <= endPG; pdfPG++)
+	{
+		var i = ddArray[pdfPG%docPgCount].selection.text;
 		if(i == "skip")
 		{
 			continue;
 		}
-		addPages(Number(i), pdfPG, pdfPG); 
+		addPages(Number(i), pdfPG, pdfPG);
 	}
 }
 else if(reverseOrder && noPDFError)
 {
-	for(reverse = endPG; reverse >= startPG; reverse--)
+	var currentDocStart = docStartPG;
+	for(var reverse = endPG; reverse >= startPG; reverse--)
 	{
-		addPages(docStartPG, reverse, reverse);
-		docStartPG++;
+		addPages(currentDocStart, reverse, reverse);
+		currentDocStart++;
 	}
 }
 else
@@ -494,8 +516,14 @@ tempObjStyle.remove();
 savePrefs(false);
 restoreDefaults(true);
 
-// THE END OF EXECUTION
-exit();
+} // End of if(scriptShouldRun)
+
+// Restore interaction preference even if script didn't run
+if (typeof oldInteractionPref !== 'undefined') {
+	app.scriptPreferences.userInteractionLevel = oldInteractionPref;
+}
+
+// THE END OF MAIN EXECUTION
 
 // Place the requested pages in the document
 function addPages(docStartPG, startPG, endPG)
@@ -505,7 +533,7 @@ function addPages(docStartPG, startPG, endPG)
 	var addedAPage = false;
 	var zeroBasedDocPgCnt = docPgCount - 1;
 
-	for(i = docStartPG - 1, currentInputDocPg = startPG; currentInputDocPg <= endPG; currentInputDocPg++, i++)
+	for(var i = docStartPG - 1, currentInputDocPg = startPG; currentInputDocPg <= endPG; currentInputDocPg++, i++)
 	{
 
 		if(placementINFO.kind == PDF_DOC)
@@ -525,29 +553,31 @@ function addPages(docStartPG, startPG, endPG)
 			theDoc.pages.add(LocationOptions.AT_END);
 			addedAPage = true;
 		}
-	
+
 		// Create a temporary text box to place graphic in (to use auto positioning and sizing)
 		var TB = theDoc.pages[i].textFrames.add({geometricBounds:[0,0,20,20]});
-		//decrease the font size of the newly inserted box to 0 to avoid a very misleading "out of pasteboard" error
-		//background: if the default font size of the ID document (set by default character style or default paragraph style) causes the text box to overflow it gives you an error saying ("This value would cause one or more objects to leave the pasteboard."). This mainly manifests in pixel based documents as the text box is only 20x20 px large in those cases.
-		TB.texts.firstItem().pointSize=1;
+		// Fix for "out of pasteboard" error:
+		// - Set small point size (fixes issue when default font is large)
+		// - Disable baseline grid alignment (fixes issue #39 when baseline grid is relative to margin)
+		TB.texts.firstItem().pointSize = 1;
+		try { TB.texts.firstItem().alignToBaseline = false; } catch(e) {}
 		var theRect = TB.insertionPoints.firstItem().rectangles.add();
             theRect.label = "Multi_Page_Importer_Rect";
-		// Applying the object style and doing a recompose updates some objects that 
+		// Applying the object style and doing a recompose updates some objects that
 		// the add method doesn't create in the rectangle object
 		theRect.appliedObjectStyle = tempObjStyle;
 		TB.recompose();
-		
+
 		// Place the current PDF/Ind page into the rectangle object
 		try
 		{
 			var tempGraphic = theRect.place(theFile)[0];
 			/* removed 6/25/08
 			tempGraphic.graphicLayerOptions.updateLinkOption = (indUpdateType == 0) ?
-																							  UpdateLinkOptions.APPLICATION_SETTINGS : 
+																							  UpdateLinkOptions.APPLICATION_SETTINGS :
 																							  UpdateLinkOptions.KEEP_OVERRIDES;
 			*/
-		
+
 			// If all pgs are being added, check that we aren't cruising to the first PDF page again
 			if(!noPDFError && !firstTime && tempGraphic.pdfAttributes.pageNumber == 1)
 			{
@@ -561,34 +591,37 @@ function addPages(docStartPG, startPG, endPG)
 					// Just remove the placed graphic
 					TB.remove();
 				}
-			
+
 				return;
 			}
 		}
 		catch(e)
 		{
-			if(e.description.indexOf("Failed to open") != -1 )
+			var errMsg = (e.description) ? e.description : String(e);
+			if(errMsg.indexOf("Failed to open") != -1 || errMsg.indexOf("Cannot open") != -1 || errMsg.indexOf("cannot be placed") != -1)
 			{
-				alert("\"" + fileName + "\" doesn't contain a \"" + cropStrings[cropType] + "\" crop type:\n\nPlease try again by selecting a different crop type or open\nthe PDF in Acrobat and perform a \"Save As...\" command.", "PDF Placement Error");
+				alert("\"" + fileName + "\" could not be placed with the \"" + cropStrings[cropType] + "\" crop type.\n\nPossible solutions:\n1. Try a different crop type (Trim, Media, or Crop)\n2. Open the PDF in Acrobat and use File > Save As to create a clean copy\n3. Re-export the PDF from the original application\n4. Check if the PDF is password-protected or corrupted", "PDF Placement Error");
 			}
 			else
 			{
-				alert(e);
+				alert("Error placing page: " + errMsg, "Placement Error");
 			}
-			if(placeOnLayer)
-			{
-				currentLayer.remove();
-			}
-			else
-			{
-				TB.remove();
-			}
+			try {
+				if(placeOnLayer && currentLayer)
+				{
+					currentLayer.remove();
+				}
+				else if(TB)
+				{
+					TB.remove();
+				}
+			} catch(cleanupErr) {}
 			restoreDefaults(true);
 			// Kill the Object style
-			tempObjStyle.remove();
-			exit(-1);
+			try { tempObjStyle.remove(); } catch(styleErr) {}
+			return; // Return instead of exit to avoid engine deletion error
 		}
-	
+
 		// Apply any rotation
 		theRect.rotationAngle = rotateValues[rotate];
 
@@ -609,7 +642,7 @@ function addPages(docStartPG, startPG, endPG)
 				// Change rectangle's size to the page size
 				theRect.geometricBounds = [0, 0, docHeight, docWidth];
 			}
-		
+
 			// Fit the placed page according to selected options
 			if(keepProp)
 			{
@@ -630,14 +663,14 @@ function addPages(docStartPG, startPG, endPG)
 
 		// Apply the Object Style to transform the graphic into an anchored item (allows auto positioning)
 		theRect.appliedObjectStyle = tempObjStyle;
-		
+
 		// Force the text box to reformat itself in order to apply the Object Style
 		TB.recompose();
-		
+
 		// Release the placed page from the text box and then delete the text box (clean up)
 		theRect.anchoredObjectSettings.releaseAnchoredObject();
 		TB.remove();
-	
+
 		firstTime = false;
 	}
 }
@@ -645,190 +678,200 @@ function addPages(docStartPG, startPG, endPG)
 // Create the main dialog box
 function makeDialog()
 {
-	dLog = new Window('dialog', "Import Multiple " + placementINFO.kind + " Pages",
+	var dlg = new Window('dialog', "Import Multiple " + placementINFO.kind + " Pages",
                         "x:100, y:100, width:533, height:365"); // old height before update option removed: 395
-	dLog.onClose = ondLogClosed;
-	
+	dlg.onClose = ondLogClosed;
+
 	/******************/
 	/* Upper Left Panel */
 	/******************/
-	dLog.pan1 = dLog.add('panel', [15,15,200,193], "Page Selection");
-	dLog.pan1.add('statictext',  [10,15,170,35], "Import " + placementINFO.kind + " Pages:"); 
+	dlg.pan1 = dlg.add('panel', [15,15,200,193], "Page Selection");
+	dlg.pan1.add('statictext',  [10,15,170,35], "Import " + placementINFO.kind + " Pages:");
 
 	if(noPDFError)
 	{
 		// Start pg
-		dLog.startPG = dLog.pan1.add('edittext', [10,40,70,63], "1");
-		dLog.startPG.onChange = startPGValidator;
-		dLog.pan1.add('statictext',  [75,45,102,60], "thru"); 
+		dlg.startPG = dlg.pan1.add('edittext', [10,40,70,63], "1");
+		dlg.startPG.onChange = startPGValidator;
+		dlg.pan1.add('statictext',  [75,45,102,60], "thru");
 
 		// End page
-		dLog.endPG = dLog.pan1.add('edittext', [105,40,165,63], placementINFO.pgCount);
-		dLog.endPG.onChange = endPGValidator;
-			
+		dlg.endPG = dlg.pan1.add('edittext', [105,40,165,63], placementINFO.pgCount);
+		dlg.endPG.onChange = endPGValidator;
+
 		// Mapping option
-		dLog.mapPages = dLog.pan1.add('checkbox', [10,144,175,164], "Map to Doc Pages");
+		dlg.mapPages = dlg.pan1.add('checkbox', [10,144,175,164], "Map to Doc Pages");
 		if(reverseOrder || docPgCount == 1)
 		{
 			mapPages = false;
-			dLog.mapPages.enabled = false;
+			dlg.mapPages.enabled = false;
 		}
-		dLog.mapPages.value = mapPages;
-		dLog.mapPages.onClick = mapPGValidator;		
-		
+		dlg.mapPages.value = mapPages;
+		dlg.mapPages.onClick = mapPGValidator;
+
 		// Reverse order
-		dLog.reverseOrder = dLog.pan1.add('checkbox', [10,70,190,85], "Reverse Page Order");
+		dlg.reverseOrder = dlg.pan1.add('checkbox', [10,70,190,85], "Reverse Page Order");
 		if(mapPages)
 		{
 			// Both Mapping and reverse can't be checked
 			reverseOrder = false;
-			dLog.reverseOrder.enabled = false;
+			dlg.reverseOrder.enabled = false;
 		}
-		dLog.reverseOrder.value = reverseOrder;
-		dLog.reverseOrder.onClick = reverseClicked;
+		dlg.reverseOrder.value = reverseOrder;
+		dlg.reverseOrder.onClick = reverseClicked;
 	}
 	else
 	{
-		dLog.pan1.add('statictext', [10,40,190,55], "Cannot determine PDF");
-		dLog.pan1.add('statictext', [10,55,190,70], "page count: all pages");
-		dLog.pan1.add('statictext', [10,70,190,85], "will be imported.");
+		dlg.pan1.add('statictext', [10,40,190,55], "Cannot determine PDF");
+		dlg.pan1.add('statictext', [10,55,190,70], "page count: all pages");
+		dlg.pan1.add('statictext', [10,70,190,85], "will be imported.");
 	}
 
 
-	// Doc start page
-	dLog.pan1.add('statictext',  [10,94,190,109], "Start Placing on Doc Page:"); 
-	dLog.docStartPG = dLog.pan1.add('edittext', [10,114,70,137], "1");
-	dLog.docStartPG.onChange = docStartPGValidator;
-	
+	// Doc start page - auto-fill with current active page (Issue #35)
+	var currentPageNum = "1";
+	try {
+		if (!theDocIsMine && app.activeWindow && app.activeWindow.activePage) {
+			currentPageNum = app.activeWindow.activePage.name;
+			// Convert page name to number if it's not already
+			if (isNaN(parseInt(currentPageNum))) {
+				currentPageNum = String(app.activeWindow.activePage.documentOffset + 1);
+			}
+		}
+	} catch(e) { currentPageNum = "1"; }
+	dlg.pan1.add('statictext',  [10,94,190,109], "Start Placing on Doc Page:");
+	dlg.docStartPG = dlg.pan1.add('edittext', [10,114,70,137], currentPageNum);
+	dlg.docStartPG.onChange = docStartPGValidator;
+
 	/***********************/
 	/* Lower Left Panel */
 	/***********************/
-	dLog.pan2 = dLog.add('panel', [15,200,200,350], "Sizing Options");
+	dlg.pan2 = dlg.add('panel', [15,200,200,350], "Sizing Options");
 
 	// BEGIN Fitting Section
-	dLog.fitPage = dLog.pan2.add('checkbox', [10,15,100,35], "Fit to Page");
-	dLog.fitPage.onClick = onFitPageClicked;
-	dLog.fitPage.value = fitPage;
+	dlg.fitPage = dlg.pan2.add('checkbox', [10,15,100,35], "Fit to Page");
+	dlg.fitPage.onClick = onFitPageClicked;
+	dlg.fitPage.value = fitPage;
 
 	// Checkbox
-	dLog.keepProp = dLog.pan2.add('checkbox', [10,35,160,55], "Keep Proportions");
-	dLog.keepProp.value = keepProp;
-	dLog.keepProp.enabled = dLog.fitPage.value;
-	
+	dlg.keepProp = dlg.pan2.add('checkbox', [10,35,160,55], "Keep Proportions");
+	dlg.keepProp.value = keepProp;
+	dlg.keepProp.enabled = dlg.fitPage.value;
+
 	// Checkbox
-	dLog.addBleed = dLog.pan2.add('checkbox', [10,55,160,75], "Bleed the Fit Page");
-	dLog.addBleed.value = addBleed;
-	dLog.addBleed.enabled = dLog.fitPage.value;
+	dlg.addBleed = dlg.pan2.add('checkbox', [10,55,160,75], "Bleed the Fit Page");
+	dlg.addBleed.value = addBleed;
+	dlg.addBleed.enabled = dlg.fitPage.value;
 	// END Fitting Section
 
 	// BEGIN Scaling section
-	dLog.pan2.add('statictext',  [10,80,200,95], "Scale of Imported Page:");
+	dlg.pan2.add('statictext',  [10,80,200,95], "Scale of Imported Page:");
 
 	// X%
-	dLog.pan2.add('statictext', [10,105,35,125], "X%:");
-	dLog.percX = dLog.pan2.add('edittext', [42,102,82,125], "100");
-	dLog.percX.text = percX;
+	dlg.pan2.add('statictext', [10,105,35,125], "X%:");
+	dlg.percX = dlg.pan2.add('edittext', [42,102,82,125], "100");
+	dlg.percX.text = percX;
 	// Visibility depends on the Fit Page checkbox
-	dLog.percX.enabled = !dLog.fitPage.value;
+	dlg.percX.enabled = !dlg.fitPage.value;
 	// Assign a validator
-	dLog.percX.onChange = percXValidator;
+	dlg.percX.onChange = percXValidator;
 
 	// Y%
-	dLog.pan2.add('statictext', [87,105,112,125], "Y%:");
-	dLog.percY = dLog.pan2.add('edittext', [119,102,159,125], "100");
-	dLog.percY.text = percY;
+	dlg.pan2.add('statictext', [87,105,112,125], "Y%:");
+	dlg.percY = dlg.pan2.add('edittext', [119,102,159,125], "100");
+	dlg.percY.text = percY;
 	// Visibility depends on the Fit Page checkbox
-	dLog.percY.enabled = !dLog.fitPage.value;
+	dlg.percY.enabled = !dlg.fitPage.value;
 	// Assign a validator
-	dLog.percY.onChange = percYValidator;
-	
+	dlg.percY.onChange = percYValidator;
+
 	/*************************/
 	/* Upper Right Panel */
 	/*************************/
-	dLog.pan3 = dLog.add('panel', [210,15,438,193], "Positioning Options");
-	dLog.pan3.add('statictext', [10,15,228,35], "Position on Page Aligned From:");
+	dlg.pan3 = dlg.add('panel', [210,15,438,193], "Positioning Options");
+	dlg.pan3.add('statictext', [10,15,228,35], "Position on Page Aligned From:");
 
 	// DropDownList
-	dLog.posDropDown =  dLog.pan3.add('dropdownlist', [10,40,215,60], positionValuesAll);
-	dLog.posDropDown.add("separator");
-	dLog.posDropDown.add("item", "Top, relative to spine");
-	dLog.posDropDown.add("item", "Center, relative to spine");
-	dLog.posDropDown.add("item", "Bottom, relative to spine");
-	dLog.posDropDown.selection = positionType;
+	dlg.posDropDown =  dlg.pan3.add('dropdownlist', [10,40,215,60], positionValuesAll);
+	dlg.posDropDown.add("separator");
+	dlg.posDropDown.add("item", "Top, relative to spine");
+	dlg.posDropDown.add("item", "Center, relative to spine");
+	dlg.posDropDown.add("item", "Bottom, relative to spine");
+	dlg.posDropDown.selection = positionType;
 
 	// Rotation
-	dLog.pan3.add('statictext', [10,70,85,90], "Rotation:");
-	dLog.rotate = dLog.pan3.add('dropdownlist', [85,67,215,88]);
-	for(i=0;i<rotateValues.length;i++)
+	dlg.pan3.add('statictext', [10,70,85,90], "Rotation:");
+	dlg.rotate = dlg.pan3.add('dropdownlist', [85,67,215,88]);
+	for(var i=0;i<rotateValues.length;i++)
 	{
-		dLog.rotate.add('item', rotateValues[i]);
+		dlg.rotate.add('item', rotateValues[i]);
 	}
-	dLog.rotate.selection = rotate;
-	
+	dlg.rotate.selection = rotate;
+
 	// Offset section
-	dLog.pan3.add('statictext', [10,97,150,117], "Offset by:");
+	dlg.pan3.add('statictext', [10,97,150,117], "Offset by:");
 	// X offset value
-	dLog.pan3.add('statictext', [10,122,25,142], "X:");
-	dLog.offsetX = dLog.pan3.add('edittext', [30,119,95,142], offsetX);
-	dLog.offsetX.onChange = offsetXValidator;
-	
+	dlg.pan3.add('statictext', [10,122,25,142], "X:");
+	dlg.offsetX = dlg.pan3.add('edittext', [30,119,95,142], offsetX);
+	dlg.offsetX.onChange = offsetXValidator;
+
 	// Y offset value
-	dLog.pan3.add('statictext', [100,122,115,142], "Y:");
-	dLog.offsetY = dLog.pan3.add('edittext', [120,119,185,142], offsetY);
-	dLog.offsetY.onChange = offsetYValidator;
+	dlg.pan3.add('statictext', [100,122,115,142], "Y:");
+	dlg.offsetY = dlg.pan3.add('edittext', [120,119,185,142], offsetY);
+	dlg.offsetY.onChange = offsetYValidator;
 
 	/*************************/
 	/* Lower Right Panel */
 	/*************************/
 	/* old position before removing update option: [210,207,427,380] */
-	dLog.pan4 = dLog.add('panel', [210,200,438,350], "Placement Options");
-	
+	dlg.pan4 = dlg.add('panel', [210,200,438,350], "Placement Options");
+
 	// Add the crop type dropdown list and populate it
-	dLog.pan4.add('statictext', [10,18,60,35], "Crop to:");
-	dLog.cropType = dLog.pan4.add('dropdownlist', [65,15,215,33]);
-	for(i=0;i<cropStrings.length;i++)
+	dlg.pan4.add('statictext', [10,18,60,35], "Crop to:");
+	dlg.cropType = dlg.pan4.add('dropdownlist', [65,15,215,33]);
+	for(var i=0;i<cropStrings.length;i++)
 	{
-		dLog.cropType.add('item', cropStrings[i]);
+		dlg.cropType.add('item', cropStrings[i]);
 	}
-	dLog.cropType.selection = (placementINFO.kind == PDF_DOC)? pdfCropType : indCropType;
+	dlg.cropType.selection = (placementINFO.kind == PDF_DOC)? pdfCropType : indCropType;
 
 	// Place on Layer
-	dLog.placeOnLayer = dLog.pan4.add('checkbox', [10,44,220,60], "Place Pages on a New Layer");
-	dLog.placeOnLayer.value = placeOnLayer;
-	
+	dlg.placeOnLayer = dlg.pan4.add('checkbox', [10,44,220,60], "Place Pages on a New Layer");
+	dlg.placeOnLayer.value = placeOnLayer;
+
 	// Ignore errors
-	dLog.ignoreErrors = dLog.pan4.add('checkbox', [10,65,220,81], "Ignore Font and Image Errors");
-	dLog.ignoreErrors.value = ignoreErrors;
-	
+	dlg.ignoreErrors = dlg.pan4.add('checkbox', [10,65,220,81], "Ignore Font and Image Errors");
+	dlg.ignoreErrors.value = ignoreErrors;
+
 	// Update Link Options
 	/* As of 6/26/08, removing this option so dialog will look better
-	dLog.pan4.add('statictext', [10,85,190,100], "Update Link Options:");
-	dLog.indUpdateType = dLog.pan4.add('dropdownlist', [10,105,200,125]);
-	for(i = 0; i < indUpdateStrings.length;i++)
+	dlg.pan4.add('statictext', [10,85,190,100], "Update Link Options:");
+	dlg.indUpdateType = dlg.pan4.add('dropdownlist', [10,105,200,125]);
+	for(var i = 0; i < indUpdateStrings.length;i++)
 	{
-		dLog.indUpdateType.add('item', indUpdateStrings[i]);
+		dlg.indUpdateType.add('item', indUpdateStrings[i]);
 	}
-	dLog.indUpdateType.selection = indUpdateType;
+	dlg.indUpdateType.selection = indUpdateType;
 	*/
-	
+
 	// Transparent PDFs
 	/* old position before removing update option: [10,133,190,152] */
-	dLog.doTransparent = dLog.pan4.add('checkbox', [10,86,220,100], "Transparent PDF Background");
-	dLog.doTransparent.value = doTransparent;
-	
+	dlg.doTransparent = dlg.pan4.add('checkbox', [10,86,220,100], "Transparent PDF Background");
+	dlg.doTransparent.value = doTransparent;
+
 	// Disable PDF options if needed
 	if(placementINFO.kind != PDF_DOC)
 	{
-		dLog.doTransparent.enabled = false;
+		dlg.doTransparent.enabled = false;
 	}
-	
+
 	// The buttons
-	dLog.OKbut = dLog.add('button', [448,20,507,45], "OK");
-	dLog.OKbut.onClick = onOKclicked;
-	dLog.CANbut = dLog.add('button', [448,50,507,75], "Cancel");
-	dLog.CANbut.onClick = onCANclicked;
-	
-	return dLog;
+	dlg.OKbut = dlg.add('button', [448,20,507,45], "OK");
+	dlg.OKbut.onClick = onOKclicked;
+	dlg.CANbut = dlg.add('button', [448,50,507,75], "Cancel");
+	dlg.CANbut.onClick = onCANclicked;
+
+	return dlg;
 }
 
 // function to restore saved settings back to originals before script ran
@@ -837,11 +880,17 @@ function makeDialog()
 // true: end of script or reading PDF file size
 function restoreDefaults(extras)
 {
-	app.scriptPreferences.userInteractionLevel = oldInteractionPref;
-	if(extras == true)
-	{
-		theDoc.zeroPoint = oldZero;
-		theDoc.viewPreferences.rulerOrigin = oldRulerOrigin;
+	try {
+		if (typeof oldInteractionPref !== 'undefined') {
+			app.scriptPreferences.userInteractionLevel = oldInteractionPref;
+		}
+		if(extras == true && typeof theDoc !== 'undefined' && theDoc)
+		{
+			if (typeof oldZero !== 'undefined') theDoc.zeroPoint = oldZero;
+			if (typeof oldRulerOrigin !== 'undefined') theDoc.viewPreferences.rulerOrigin = oldRulerOrigin;
+		}
+	} catch(e) {
+		// Silently handle any errors during cleanup
 	}
 }
 
@@ -873,7 +922,8 @@ function readPrefs()
 		}
 		catch(e)
 		{
-			throwError("Could not read preferences: " + e, false, 2, prefsFile);
+			if(prefsFile) prefsFile.close();
+			// Don't show error for prefs, just use defaults
 		}
 	}
 }
@@ -908,7 +958,8 @@ function savePrefs(firstRun)
 		 }
 		catch(e)
 		{
-			throwError("Could not save preferences: " + e, false, 2, prefsFile);
+			if(prefsFile) prefsFile.close();
+			// Don't show error for prefs
 		}
 	}
 }
@@ -929,8 +980,123 @@ function savePrefs(firstRun)
 // page count = retArray.pgCount
 // page width = retArray.pgSize.pgWidth
 // page height = retArray.pgSize.pgHeight
-function getPDFInfo(theFile, getSize)
-{ 
+function getPDFInfo(pdfFile, getSize)
+{
+	var retArray = new Array();
+	retArray["pgCount"] = -1;
+	retArray["pgSize"] = null;
+
+	// First try modern PDF parsing method (works with cross-reference streams)
+	var modernResult = getPDFInfoModern(pdfFile, getSize);
+	if(modernResult.pgCount > 0)
+	{
+		return modernResult;
+	}
+
+	// Fall back to traditional xref parsing for older PDFs
+	return getPDFInfoTraditional(pdfFile, getSize);
+}
+
+// Modern PDF parsing - handles cross-reference streams and object streams
+// Used by InDesign 2024+ compatible PDFs
+function getPDFInfoModern(pdfFile, getSize)
+{
+	var retArray = new Array();
+	retArray["pgCount"] = -1;
+	retArray["pgSize"] = null;
+
+	try
+	{
+		pdfFile.open("r");
+
+		// Read file content in chunks to find page count
+		var content = "";
+		var chunkSize = 65536; // 64KB chunks
+		var maxRead = 524288; // Read up to 512KB
+		var bytesRead = 0;
+
+		while(!pdfFile.eof && bytesRead < maxRead)
+		{
+			var chunk = pdfFile.read(chunkSize);
+			content += chunk;
+			bytesRead += chunk.length;
+
+			// Look for /Type /Pages with /Count
+			// Pattern: /Type /Pages ... /Count N
+			var pagesMatch = content.match(/\/Type\s*\/Pages[^>]*\/Count\s+(\d+)/);
+			if(pagesMatch)
+			{
+				retArray["pgCount"] = parseInt(pagesMatch[1], 10);
+				break;
+			}
+
+			// Also try alternate ordering: /Count N ... /Type /Pages
+			pagesMatch = content.match(/\/Count\s+(\d+)[^>]*\/Type\s*\/Pages/);
+			if(pagesMatch)
+			{
+				retArray["pgCount"] = parseInt(pagesMatch[1], 10);
+				break;
+			}
+		}
+
+		// If we found page count and need size, get it
+		if(retArray["pgCount"] > 0 && getSize)
+		{
+			// Reset and read for page size
+			pdfFile.seek(0);
+			content = pdfFile.read(maxRead);
+
+			var pgSize = new Array();
+
+			// Try to find TrimBox first, then MediaBox
+			var trimBoxMatch = content.match(/\/TrimBox\s*\[\s*([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s*\]/);
+			var mediaBoxMatch = content.match(/\/MediaBox\s*\[\s*([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s*\]/);
+
+			var boxMatch = trimBoxMatch || mediaBoxMatch;
+
+			if(boxMatch)
+			{
+				var x1 = parseFloat(boxMatch[1]);
+				var y1 = parseFloat(boxMatch[2]);
+				var x2 = parseFloat(boxMatch[3]);
+				var y2 = parseFloat(boxMatch[4]);
+
+				var width = x2 - x1;
+				var height = y2 - y1;
+
+				// Check for rotation
+				var rotateMatch = content.match(/\/Rotate\s+(\d+)/);
+				var rotation = rotateMatch ? parseInt(rotateMatch[1], 10) : 0;
+
+				if(rotation == 90 || rotation == 270)
+				{
+					pgSize["width"] = height;
+					pgSize["height"] = width;
+				}
+				else
+				{
+					pgSize["width"] = width;
+					pgSize["height"] = height;
+				}
+
+				retArray["pgSize"] = pgSize;
+			}
+		}
+
+		pdfFile.close();
+	}
+	catch(e)
+	{
+		try { pdfFile.close(); } catch(e2) {}
+	}
+
+	return retArray;
+}
+
+// Traditional xref-based PDF parsing (original method)
+// Works with PDFs that use traditional cross-reference tables
+function getPDFInfoTraditional(pdfFile, getSize)
+{
 	var flag = 0; // used to keep track if the %EOF line was encountered
 	var nlCount = 0; // number of newline characters per line (1 or 2)
 
@@ -940,15 +1106,16 @@ function getPDFInfo(theFile, getSize)
 	retArray["pgSize"] = null;
 
 	// Open the PDF file for reading
-	theFile.open("r");
+	pdfFile.open("r");
 
 	// Search for %EOF line
 	// This skips any garbage at the end of the file
 	// if FOE% is encountered (%EOF read backwards), flag will be 15
-	for(i=0; flag != 15; i++)
+	var maxSearch = 2048; // Increase search range for modern PDFs
+	for(var i=0; flag != 15 && i < maxSearch; i++)
 	{
-		theFile.seek(i,2);
-		switch(theFile.readch())
+		pdfFile.seek(i,2);
+		switch(pdfFile.readch())
 		{
 			case "F":
 				flag|=1;
@@ -967,39 +1134,80 @@ function getPDFInfo(theFile, getSize)
 				break;
 		}
 	}
+
+	// If we couldn't find %EOF, give up on traditional parsing
+	if(flag != 15)
+	{
+		pdfFile.close();
+		throw Error("Could not find PDF EOF marker");
+	}
+
 	// Jump back a small distance to allow going forward more easily
-	theFile.seek(theFile.tell()-100);
+	pdfFile.seek(pdfFile.tell()-100);
 
 	// Read until startxref section is reached
-	while(theFile.readln() != "startxref");
+	var maxLines = 50;
+	var foundStartXref = false;
+	while(maxLines-- > 0)
+	{
+		if(pdfFile.readln() == "startxref")
+		{
+			foundStartXref = true;
+			break;
+		}
+	}
+
+	if(!foundStartXref)
+	{
+		pdfFile.close();
+		throw Error("Could not find startxref");
+	}
 
 	// Set the position of the first xref section
-	var xrefPos = parseInt(theFile.readln(), 10);
+	var xrefPos = parseInt(pdfFile.readln(), 10);
+
+	if(isNaN(xrefPos))
+	{
+		pdfFile.close();
+		throw Error("Invalid xref position");
+	}
 
 	// The array for all the xref sections
 	var	xrefArray = new Array();
 
 	// Go to the xref section
-	theFile.seek(xrefPos);
+	pdfFile.seek(xrefPos);
+
+	// Check if this is a traditional xref or xref stream
+	var firstLine = pdfFile.readln();
+	if(firstLine != "xref")
+	{
+		// This might be an xref stream (modern PDF) - fall back
+		pdfFile.close();
+		throw Error("PDF uses xref stream instead of traditional xref table");
+	}
+
+	// Go back to xref position
+	pdfFile.seek(xrefPos);
 
 	// Determine length of xref entries
 	// (not all PDFs are compliant with the requirement of 20 char/entry)
-	xrefArray["lineLen"] = determineLineLen(theFile);
+	xrefArray["lineLen"] = determineLineLen(pdfFile);
 
 	// Get all the xref sections
 	while(xrefPos != -1)
 	{
 		// Go to next section
-		theFile.seek(xrefPos);
+		pdfFile.seek(xrefPos);
 
 		// Make sure it's an xref line we went to, otherwise PDF is no good
-		if (theFile.readln() != "xref")
+		if (pdfFile.readln() != "xref")
 		{
-			throwError("Cannot determine page count.", true, 99, theFile);
+			throwError("Cannot determine page count.", true, 99, pdfFile);
 		}
 
 		// Add the current xref section into the main array
-		xrefArray[xrefArray.length] = makeXrefEntry(theFile, xrefArray.lineLen);
+		xrefArray[xrefArray.length] = makeXrefEntry(pdfFile, xrefArray.lineLen);
 
 		// See if there are any more xref sections
 		xrefPos = xrefArray[xrefArray.length-1].prevXref;
@@ -1007,7 +1215,7 @@ function getPDFInfo(theFile, getSize)
 
 	// Go get the location of the /Catalog section (the /Root obj)
 	var objRef = -1;
-	for(i=0; i < xrefArray.length; i++)
+	for(var i=0; i < xrefArray.length; i++)
 	{
 		objRef = xrefArray[i].rootObj;
 		if(objRef != -1)
@@ -1019,28 +1227,28 @@ function getPDFInfo(theFile, getSize)
 	// Double check root obj was found
 	if(objRef == -1)
 	{
-		throwError("Unable to find Root object.", true, 98, theFile);
+		throwError("Unable to find Root object.", true, 98, pdfFile);
 	}
 
 	// Get the offset of the root section and set file position to it
-	var theOffset = getByteOffset(objRef, xrefArray);
-	theFile.seek(theOffset);
+	var theOffset = getByteOffset(objRef, xrefArray, pdfFile);
+	pdfFile.seek(theOffset);
 
 	// Determine the obj where the first page is located
-	objRef = getRootPageNode(theFile);
+	objRef = getRootPageNode(pdfFile);
 
 	// Get the offset where the root page nod is located and set the file position to it
-	theOffset = getByteOffset(objRef, xrefArray);
-	theFile.seek(theOffset);
+	theOffset = getByteOffset(objRef, xrefArray, pdfFile);
+	pdfFile.seek(theOffset);
 
 	// Get the page count info from the root page tree node section
-	retArray.pgCount = readPageCount(theFile);
+	retArray.pgCount = readPageCount(pdfFile);
 
 	// Does user need size also? If so, get size info
 	if(getSize)
 	{
 		// Go back to root page tree node
-		theFile.seek(theOffset);
+		pdfFile.seek(theOffset);
 
 		// Flag to tell if page tree root was visited already
 		var rootFlag = false;
@@ -1056,18 +1264,18 @@ function getPDFInfo(theFile, getSize)
 				// Also look for instance when MediBox is in the root obj
 				do
 				{
-					var tempLine = theFile.readln();
+					var tempLine = pdfFile.readln();
 				}while(tempLine.indexOf("/Kids") == -1 && tempLine.indexOf(">>") == -1);
 
 			}
 			else
-			{				
+			{
 				// Try to first find the line with the /MediaBox entry
 				rootFlag = true; // Indicate root page tree was visited
 				getOut = false; // Force loop if /MediaBox isn't found here
 				do
 				{
-					var tempLine = theFile.readln();
+					var tempLine = pdfFile.readln();
 					if(tempLine.indexOf("/MediaBox") != -1)
 					{
 						getOut = true;
@@ -1078,7 +1286,7 @@ function getPDFInfo(theFile, getSize)
 				if(!getOut)
 				{
 					// Reset the file pointer to the beginning of the root obj again
-					theFile.seek(theOffset)
+					pdfFile.seek(theOffset)
 				}
 			}
 
@@ -1094,7 +1302,7 @@ function getPDFInfo(theFile, getSize)
 				else
 				{
 					// Go down one line
-					tempLine = theFile.readln();
+					tempLine = pdfFile.readln();
 
 					// Check if the opening bracket is on this line
 					if(tempLine.indexOf("[") != -1)
@@ -1111,21 +1319,21 @@ function getPDFInfo(theFile, getSize)
 				}
 
 				// Get the file offset for the page obj and set file pos to it
-				theOffset = getByteOffset(objRef, xrefArray);
-				theFile.seek(theOffset);
+				theOffset = getByteOffset(objRef, xrefArray, pdfFile);
+				pdfFile.seek(theOffset);
 				getOut = false;
 			}
 		}while(!getOut);
 
 		// Make sure file position is correct if finally at a leaf
-		theFile.seek(theOffset);
+		pdfFile.seek(theOffset);
 
 		// Go get the page sizes
-		retArray.pgSize = getPageSize(theFile);
+		retArray.pgSize = getPageSize(pdfFile);
 	}
 
 	// Close the PDF file, finally all done!
-	theFile.close();
+	pdfFile.close();
 
 	return retArray;
 }
@@ -1133,14 +1341,14 @@ function getPDFInfo(theFile, getSize)
 // Function to create an array of xref info
 // File position must be set to second line of xref section
 // *** File position changes in this function. ***
-function makeXrefEntry(theFile, lineLen)
+function makeXrefEntry(pdfFile, lineLen)
 {
 	var newEntry = new Array();
 	newEntry["theSects"] = new Array();
-	var tempLine = theFile.readln();
+	var tempLine = pdfFile.readln();
 
 	// Save info
-	newEntry.theSects[0] = makeXrefSection(tempLine, theFile.tell());
+	newEntry.theSects[0] = makeXrefSection(tempLine, pdfFile.tell());
 
 	// Try to get to trailer line
 	var xrefSec = newEntry.theSects[newEntry.theSects.length-1].refPos;
@@ -1148,15 +1356,15 @@ function makeXrefEntry(theFile, lineLen)
 	do
 	{
 		var getOut = true;
-		for(i=0; i<numObjs;i++)
+		for(var i=0; i<numObjs;i++)
 		{
-			theFile.readln(); // get past the objects: tell( ) method is all screwed up in CS4
+			pdfFile.readln(); // get past the objects: tell( ) method is all screwed up in CS4
 		}
-		tempLine = theFile.readln();
+		tempLine = pdfFile.readln();
 		if(tempLine.indexOf("trailer") == -1)
-		{ 
+		{
 			// Found another xref section, create an entry for it
-			var tempArray = makeXrefSection(tempLine, theFile.tell());
+			var tempArray = makeXrefSection(tempLine, pdfFile.tell());
 			newEntry.theSects[newEntry.theSects.length] = tempArray;
 			xrefSec = tempArray.refPos;
 			numObjs = tempArray.numObjs;
@@ -1170,9 +1378,9 @@ function makeXrefEntry(theFile, lineLen)
 	newEntry["prevXref"] = -1;
 	do
 	{
-		tempLine = theFile.readln();
+		tempLine = pdfFile.readln();
 		if(tempLine.indexOf("/Root") != -1)
-		{			
+		{
 			// Extract the obj location where the root of the page tree is located:
 			newEntry.rootObj = parseInt(tempLine.substring(tempLine.indexOf("/Root") + 5), 10);
 		}
@@ -1199,15 +1407,16 @@ function makeXrefSection(theLine, thePos)
 
 // Function that gets the page count form a root page section
 // *** File position changes in this function. ***
-function readPageCount(theFile)
+function readPageCount(pdfFile)
 {
 	// Read in first line of section
-	var theLine = theFile.readln();
+	var theLine = pdfFile.readln();
+	var maxLines = 100;
 
 	// Locate the line containing the /Count entry
-	while(theLine.indexOf("/Count") == -1)
+	while(theLine.indexOf("/Count") == -1 && maxLines-- > 0)
 	{
-		theLine = theFile.readln();
+		theLine = pdfFile.readln();
 	}
 
 	// Extract the page count
@@ -1217,17 +1426,18 @@ function readPageCount(theFile)
 // Function to determine length of xref entries
 // Not all PDFs conform to the 20 char/entry requirement
 // *** File position changes in this function. ***
-function determineLineLen(theFile)
+function determineLineLen(pdfFile)
 {
 	// Skip xref line
-	theFile.readln();
+	pdfFile.readln();
 	var lineLen = -1;
 
 	// Loop trying to find lineLen
+	var maxIterations = 100;
 	do
 	{
 		var getOut = true;
-		 var tempLine = theFile.readln();
+		var tempLine = pdfFile.readln();
 		if(tempLine != "trailer")
 		{
 			// Get the number of object enteries in this section
@@ -1236,17 +1446,17 @@ function determineLineLen(theFile)
 			// If there is more than one entry in this section, use them to determime lineLen
 			if(numObj > 1)
 			{
-				theFile.readln();
-				var tempPos = theFile.tell();
-				theFile.readln();
-				lineLen = theFile.tell() - tempPos;
+				pdfFile.readln();
+				var tempPos = pdfFile.tell();
+				pdfFile.readln();
+				lineLen = pdfFile.tell() - tempPos;
 			}
 			else
 			{
 				if(numObj == 1)
 				{
 					// Skip the single entry
-					theFile.readln();
+					pdfFile.readln();
 				}
 				getOut = false;
 			}
@@ -1254,25 +1464,25 @@ function determineLineLen(theFile)
 		else
 		{
 			// Read next line(s) and extract previous xref section
-			var getOut = false;
+			getOut = false;
 			do
 			{
-				tempLine = theFile.readln();
+				tempLine = pdfFile.readln();
 				if(tempLine.indexOf("/Prev") != -1)
 				{
-					theFile.seek(parseInt(tempLine.substring(tempLine.indexOf("/Prev") + 5)));
+					pdfFile.seek(parseInt(tempLine.substring(tempLine.indexOf("/Prev") + 5)));
 					getOut = true;
 				}
 			}while(tempLine.indexOf(">>") == -1 && !getOut);
-			theFile.readln(); // Skip the xref line
+			pdfFile.readln(); // Skip the xref line
 			getOut = false;
 		}
-	}while(!getOut);
+	}while(!getOut && maxIterations-- > 0);
 
 	// Check if there was a problem determining the line length
 	if(lineLen == -1)
 	{
-		throwError("Unable to determine xref dictionary line length.", true, 97, theFile);
+		throwError("Unable to determine xref dictionary line length.", true, 97, pdfFile);
 	}
 
 	return lineLen;
@@ -1281,25 +1491,25 @@ function determineLineLen(theFile)
 // Function that determines the byte offset of an object number
 // Searches the built array of xref sections and reads the offset for theObj
 // *** File position changes in this function. ***
-function getByteOffset(theObj, xrefArray)
+function getByteOffset(theObj, xrefArray, pdfFile)
 {
 	var theOffset = -1;
 
 	// Look for the theObj in all sections found previously
-	for(i = 0; i < xrefArray.length; i++)
+	for(var i = 0; i < xrefArray.length; i++)
 	{
 		var tempArray = xrefArray[i];
-		for(j=0; j < tempArray.theSects.length; j++)
+		for(var j=0; j < tempArray.theSects.length; j++)
 		{
 			 var tempArray2 = tempArray.theSects[j];
 
 			// See if theObj falls within this section
 			if(tempArray2.startObj <= theObj && theObj <= tempArray2.startObj + tempArray2.numObjs -1)
 			{
-				theFile.seek((tempArray2.refPos + ((theObj - tempArray2.startObj) * xrefArray.lineLen)));
+				pdfFile.seek((tempArray2.refPos + ((theObj - tempArray2.startObj) * xrefArray.lineLen)));
 
 				// Get the location of the obj
-				var tempLine = theFile.readln();
+				var tempLine = pdfFile.readln();
 
 				// Check if this is an old obj, if so ignore it
 				// An xref entry with n is live, with f is not
@@ -1321,14 +1531,15 @@ function getByteOffset(theObj, xrefArray)
 // Function to extract the root page node object from a section
 // File position must be at the start of the root page node
 // *** File position changes in this function. ***
-function getRootPageNode(theFile)
+function getRootPageNode(pdfFile)
 {
-	var tempLine = theFile.readln();
+	var tempLine = pdfFile.readln();
+	var maxLines = 100;
 
 	// Go to line with /Page token in it
-	while(tempLine.indexOf("/Pages") == -1)
+	while(tempLine.indexOf("/Pages") == -1 && maxLines-- > 0)
 	{
-		tempLine = theFile.readln();
+		tempLine = pdfFile.readln();
 	}
 
 	// Extract the root page obj number
@@ -1338,29 +1549,32 @@ function getRootPageNode(theFile)
 // Function to extract the sizes from a page reference section
 // File position must be at the start of the page object
 // *** File position changes in this function. ***
-function getPageSize(theFile)
+function getPageSize(pdfFile)
 {
 	var hasTrimBox = false; // Prevent MediaBox from overwriting TrimBox info
 	var charOffset = -1;
 	var isRotated = false; // Page rotated 90 or 270 degrees?
 	var foundSize = false; // Was a size found?
+	var theNums;
+	var maxLines = 100;
+
 	do
 	{
-		var theLine = theFile.readln();
+		var theLine = pdfFile.readln();
 		if(!hasTrimBox && (charOffset = theLine.indexOf("/MediaBox")) != -1)
 		{
 			// Is the array on the same line?
 			if(theLine.indexOf("[", charOffset + 9) == -1)
 			{
 				// Need to go down one line to find the array
-				theLine = theFile.readln();
+				theLine = pdfFile.readln();
 				// Extract the values of the MediaBox array (x1, y1, x2, y2)
-				var theNums = theLine.split("[")[1].split("]")[0].split(" ");
+				theNums = theLine.split("[")[1].split("]")[0].split(" ");
 			}
 			else
 			{
 				// Extract the values of the MediaBox array (x1, y1, x2, y2)
-				var theNums = theLine.split("/MediaBox")[1].split("[")[1].split("]")[0].split(" ");
+				theNums = theLine.split("/MediaBox")[1].split("[")[1].split("]")[0].split(" ");
 			}
 
 			// Take care of leading space
@@ -1377,14 +1591,14 @@ function getPageSize(theFile)
 			if(theLine.indexOf("[", charOffset + 8) == -1)
 			{
 				// Need to go down one line to find the array
-				theLine = theFile.readln();
+				theLine = pdfFile.readln();
 				// Extract the values of the MediaBox array (x1, y1, x2, y2)
-				var theNums = theLine.split("[")[1].split("]")[0].split(" ");
+				theNums = theLine.split("[")[1].split("]")[0].split(" ");
 			}
 			else
 			{
 				// Extract the values of the MediaBox array (x1, y1, x2, y2)
-				var theNums = theLine.split("/TrimBox")[1].split("[")[1].split("]")[0].split(" ");
+				theNums = theLine.split("/TrimBox")[1].split("[")[1].split("]")[0].split(" ");
 			}
 
 			// Prevent MediaBox overwriting TrimBox values
@@ -1398,7 +1612,7 @@ function getPageSize(theFile)
 
 			foundSize = true;
 		}
-		if((charOffset = theLine.indexOf("/Rotate") ) != 1)
+		if((charOffset = theLine.indexOf("/Rotate") ) != -1)
 		{
 			var rotVal = parseInt(theLine.substring(charOffset + 7));
 			if(rotVal == 90 || rotVal == 270)
@@ -1406,12 +1620,12 @@ function getPageSize(theFile)
 				isRotated = true;
 			}
 		}
-	}while(theLine.indexOf(">>") == -1);
+	}while(theLine.indexOf(">>") == -1 && maxLines-- > 0);
 
 	// Check if a size array wasn't found
 	if(!foundSize)
 	{
-		throwError("Unable to determine PDF page size.", true, 96, theFile);
+		throwError("Unable to determine PDF page size.", true, 96, pdfFile);
 	}
 
 	// Do the math
@@ -1421,7 +1635,7 @@ function getPageSize(theFile)
 	// One last check that sizes are actually numbers
 	if(isNaN(xSize) || isNaN(ySize))
 	{
-		throwError("One or both page dimensions could not be calculated.", true, 95, theFile);
+		throwError("One or both page dimensions could not be calculated.", true, 95, pdfFile);
 	}
 
 	// Use rotation to determine orientation of pages
@@ -1434,22 +1648,22 @@ function getPageSize(theFile)
 
 // Error function
 function throwError(msg, pdfError, idNum, fileToClose)
-{	
-
+{
 	if(fileToClose != null)
 	{
-		fileToClose.close();
+		try { fileToClose.close(); } catch(e) {}
 	}
-	
+
 	if(pdfError)
 	{
 		// Throw err to be able to turn page numbering off
-		throw Error("dummy");
+		throw Error("PDF parsing error: " + msg);
 	}
 	else
 	{
 		alert("ERROR: " + msg + " (" + idNum + ")", "MultiPageImporter Script Error");
-		exit(idNum);
+		// Throw error instead of exit to avoid engine deletion problems
+		throw Error("Script error " + idNum + ": " + msg);
 	}
 }
 
@@ -1476,15 +1690,15 @@ function getINDinfo(theDoc)
 
 // File filter for the mac to only show indy and pdf files
 function macFileFilter(fileToTest)
-{ 
-	if(fileToTest.name.indexOf(".pdf") > -1 || fileToTest.name.indexOf(".ai") > -1 || fileToTest.name.indexOf(".ind") > -1)
-		return true; 		 
+{
+	if(fileToTest.name.indexOf(".pdf") > -1 || fileToTest.name.indexOf(".ai") > -1 || fileToTest.name.indexOf(".ind") > -1 || fileToTest.name.indexOf(".idml") > -1)
+		return true;
 	else
-		return false;	 
+		return false;
 }
 
 /* HELPER FUNCTIONS FOR THE DIALOG WINDOW */
-	
+
 // Enable/disable Keep Props, Bleed Fit, Scale boxes and Offset boxes when Fit Page is un/checked
 function onFitPageClicked()
 {
@@ -1528,8 +1742,8 @@ function docStartPGValidator()
 // Actual page validator
 function pageValidator(me, max, boxType)
 {
-	errType = "Invalid Page Number Error";
-	temp = new Number(me.text);
+	var errType = "Invalid Page Number Error";
+	var temp = new Number(me.text);
 	if(isNaN(temp))
 	{
 		alert("Please enter '" + boxType + "' page as a number.", errType);
@@ -1568,7 +1782,7 @@ function percYValidator()
 // Validator for the percentage boxes
 function percentageValidator(me, boxType)
 {
-	temp = new Number(me.text);
+	var temp = new Number(me.text);
 	if(isNaN(temp))
 	{
 		alert("Please enter a number in the " + boxType + " percentage box!", "Invalid Percentage Error" );
@@ -1614,27 +1828,29 @@ function ondLogClosed()
 	}
 }
 
-// File filter for the mac to only show indy and pdf files
+// File filter for the mac to only show indy, pdf, and template files
 // The test for the constructor name came from Dave Suanders: http://jsid.blogspot.com/2006_03_01_archive.html
 function macFileFilter(fileToTest)
-{ 
-	if((fileToTest.name.indexOf(".pdf") != -1 || fileToTest.name.indexOf(".indd") != -1 || fileToTest.name.indexOf(".ai") != -1 || 
-	     fileToTest.constructor.name == "Folder" || fileToTest.name == "") && fileToTest.name.indexOf(".app") == -1)
-		return true; 		 
+{
+	var name = fileToTest.name.toLowerCase();
+	if((name.indexOf(".pdf") != -1 || name.indexOf(".indd") != -1 || name.indexOf(".indt") != -1 ||
+	    name.indexOf(".idml") != -1 || name.indexOf(".ai") != -1 ||
+	    fileToTest.constructor.name == "Folder" || fileToTest.name == "") && name.indexOf(".app") == -1)
+		return true;
 	else
-		return false;	 
+		return false;
 }
 
 // When reverseOrder checkbox is clicked, enable/disable the mapping checkbox
 function reverseClicked()
 {
 	var setValue = true;
-	
+
 	if(dLog.reverseOrder.value)
 	{
 		setValue = false;
 	}
-	
+
 	dLog.mapPages.enabled = setValue && docPgCount != 1;
 }
 /*********************************************/
@@ -1651,9 +1867,11 @@ function createMappingDialog(pdfStart, pdfEnd, numArray)
 	var currentPage = pdfStart;
 	var numPDFPages = (pdfEnd - pdfStart)+1;
 	var temp;
-	
-	mapDlog =  new Window('dialog', "Map Pages");
-	mapDlog.add("statictext", [10,15,380,35], "Map " + placementINFO.kind + " pages to desired Document pages (" + placementINFO.kind + "->Doc):");
+	var mapDlogW, mapDlogH;
+	var numCells, addW, addH;
+
+	var mapDlg =  new Window('dialog', "Map Pages");
+	mapDlg.add("statictext", [10,15,380,35], "Map " + placementINFO.kind + " pages to desired Document pages (" + placementINFO.kind + "->Doc):");
 
 	// Dynamically create controls
 	while(numDone < numPDFPages)
@@ -1663,8 +1881,8 @@ function createMappingDialog(pdfStart, pdfEnd, numArray)
 		{
 			addW = (numCells*100);
 			addH = (Math.floor(numDone/maxCellsInRow)*30);
-			mapDlog.add("statictext", [10 +addW, 45 + addH, 45+addW, 65+addH], formatPgNum(currentPage) );
-			temp = mapDlog.add("dropdownlist", [50 +addW, 40 + addH, 100+addW, 60+addH],null,{items:numArray});
+			mapDlg.add("statictext", [10 +addW, 45 + addH, 45+addW, 65+addH], formatPgNum(currentPage) );
+			temp = mapDlg.add("dropdownlist", [50 +addW, 40 + addH, 100+addW, 60+addH],null,{items:numArray});
 			temp.selection = ddIndexArray[currentPage%docPgCount];
 			ddArray[currentPage%docPgCount] = temp;
 			numCells++;
@@ -1680,43 +1898,31 @@ function createMappingDialog(pdfStart, pdfEnd, numArray)
 		mapDlogW = 10 + numPDFPages * 100;
 	else
 		mapDlogW = 10 + maxCellsInRow * 100;
-	
+
 	mapDlogH = (Math.ceil(numPDFPages/maxCellsInRow) * 30) + 80;
 
 	// The buttons: uses the calculated height and width to determine position
-	mapDlog.OKbut = mapDlog.add('button',  [mapDlogW - 140, mapDlogH - 35, mapDlogW - 80 , mapDlogH - 10], "OK");
-	mapDlog.OKbut.onClick = onMapOKclicked;
-	mapDlog.CANbut = mapDlog.add('button', [mapDlogW - 70, mapDlogH - 35, mapDlogW - 10 , mapDlogH - 10], "Cancel");
-	mapDlog.CANbut.onClick = onMapCANclicked;
-	mapDlog.onClose = onMapClose;
+	mapDlg.OKbut = mapDlg.add('button',  [mapDlogW - 140, mapDlogH - 35, mapDlogW - 80 , mapDlogH - 10], "OK");
+	mapDlg.OKbut.onClick = function() { mapDlg.close(1); };
+	mapDlg.CANbut = mapDlg.add('button', [mapDlogW - 70, mapDlogH - 35, mapDlogW - 10 , mapDlogH - 10], "Cancel");
+	mapDlg.CANbut.onClick = function() { doMapCheck = false; mapDlg.close(2); };
+	mapDlg.onClose = onMapClose;
 
-	mapDlog.bounds = [0,0, mapDlogW, mapDlogH];
-	return mapDlog;
+	mapDlg.bounds = [0,0, mapDlogW, mapDlogH];
+	return mapDlg;
 }
 
-function onMapOKclicked()
-{
-	mapDlog.close();
-}
-
-function onMapCANclicked()
-{
-	doMapCheck = false;
-	restoreDefaults(false);
-	exit();
-}
-
-// Test the given input for duplicates. 
+// Test the given input for duplicates.
 function onMapClose()
 {
 	var result = true;
-	
+
 	if(doMapCheck)
 	{
 		var trackerArray = new Array(docPgCount);
 
 		// Xref the ddIndexArray to the ddArray selected index
-		for(i=startPG; i <= endPG; i++)
+		for(var i=startPG; i <= endPG; i++)
 		{
 			var thisPop = ddArray[i%docPgCount];
 			var popSelect = thisPop.selection.index;
@@ -1746,7 +1952,8 @@ function onMapClose()
 // Format the given page number to include an "arrow" so as to make
 // the page number 5 characters long. Used in the mapping dialog box.
 function formatPgNum(current)
-{	
+{
+	var arrow;
 	if(current<10)
 		arrow = "--->";
 	else if (current < 100)
@@ -1765,7 +1972,7 @@ function mapPGValidator()
 		if((Number(dLog.endPG.text)-Number(dLog.startPG.text))+1 > docPgCount)
 		{
 			alert("Mapping is not available: There are not enough document pages to place the PDFs in the selected page range " +
-			       "onto their own document pages. Either reduce the number of PDF pages in the range or increase the " + 
+			       "onto their own document pages. Either reduce the number of PDF pages in the range or increase the " +
 				   "number of pages in the document that the PDF pages are being placed into.", "Mapping Error");
 			dLog.mapPages.value = false;
 		}
